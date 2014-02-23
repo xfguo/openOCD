@@ -362,6 +362,10 @@ AC_ARG_ENABLE([dummy],
   AS_HELP_STRING([--enable-dummy], [Enable building the dummy port driver]),
   [build_dummy=$enableval], [build_dummy=no])
 
+AC_ARG_ENABLE([digilent_adapt2],
+  AS_HELP_STRING([--enable-digilent-adapt2], [Enable building the Digilent adapt2 port driver]),
+  [build_digilent_adapt2=$enableval], [build_digilent_adapt2=no])
+
 m4_define([AC_ARG_ADAPTERS], [
   m4_foreach([adapter], [$1],
 	[AC_ARG_ENABLE(ADAPTER_OPT([adapter]),
@@ -617,6 +621,13 @@ else
   AC_DEFINE([BUILD_DUMMY], [0], [0 if you don't want dummy driver.])
 fi
 
+if test $build_digilent_adapt2 = yes; then
+  build_bitbang=yes
+  AC_DEFINE([BUILD_DIGILENT_ADAPT2], [1], [1 if you want Digilent Adapt2 driver.])
+else
+  AC_DEFINE([BUILD_DIGILENT_ADAPT2], [0], [0 if you don't want Digilent Adapt2 driver.])
+fi
+
 if test $build_ep93xx = yes; then
   build_bitbang=yes
   AC_DEFINE([BUILD_EP93XX], [1], [1 if you want ep93xx.])
@@ -852,6 +863,42 @@ if test $is_win32 = no && test $is_darwin = no ; then
 if test "${with_ftd2xx_win32_zipdir+set}" = set
 then
    AC_MSG_ERROR([The option: --with-ftd2xx-win32-zipdir is for win32 only])
+fi
+
+if test $build_digilent_adapt2 = yes ; then
+   AC_MSG_CHECKING([for libdjtg and libdmgr ])
+   if test ! -f /usr/local/include/digilent/adept/dpcdecl.h ; then
+      AC_MSG_ERROR([adapt2 sdk from Digilent seems to be missing, cannot find: /usr/local/include/digilent/adept/dpcdecl.h])
+   fi
+   if test ! -f /usr/local/include/digilent/adept/dmgr.h ; then
+      AC_MSG_ERROR([adapt2 sdk from Digilent seems to be missing, cannot find: /usr/local/include/digilent/adept/dmgr.h])
+   fi
+   if test ! -f /usr/local/include/digilent/adept/djtg.h ; then
+      AC_MSG_ERROR([adapt2 sdk from Digilent seems to be missing, cannot find: /usr/local/include/digilent/adept/djtag.h])
+   fi
+   
+   case "$host_cpu" in
+   i?86|x86_32)
+      libdir=lib;;
+   amd64|x86_64)
+      libdir=lib64;;
+   *)
+      libdir=lib;;
+   esac
+
+   if test ! -f /usr/local/$libdir/digilent/adept/libdmgr.so ; then
+      AC_MSG_ERROR([adapt2 sdk from Digilent seems to be missing, cannot find: /usr/local/$libdir/digilent/adept/libdjtg.so])
+   fi
+   if test ! -f /usr/local/$libdir/digilent/adept/libdjtg.so ; then
+      AC_MSG_ERROR([adapt2 sdk from Digilent seems to be missing, cannot find: /usr/local/$libdir/digilent/adept/libdjtg.so])
+   fi
+
+   DIGILENT_ADAPT2_LIB="-ldmgr -ldjtg"
+   DIGILENT_ADAPT2_LDFLAGS="-L/usr/local/$libdir/digilent/adept"
+   LDFLAGS="${LDFLAGS} ${DIGILENT_ADAPT2_LDFLAGS}"
+   LIBS="${DIGILENT_ADAPT2_LIB} ${LIBS}"
+   CFLAGS="$CFLAGS -I/usr/local/include/digilent/adept"
+   AC_MSG_RESULT([${DIGILENT_ADAPT2_LDFLAGS} ${DIGILENT_ADAPT2_LIB}])
 fi
 
 if test $build_ft2232_ftd2xx = yes -o $build_presto_ftd2xx = yes -o $build_usb_blaster_ftd2xx = yes -o $build_openjtag_ftd2xx = yes; then
@@ -1149,6 +1196,7 @@ AM_CONDITIONAL([HLADAPTER], [test $enable_stlink != no -o $enable_ti_icdi != no]
 AM_CONDITIONAL([RELEASE], [test $build_release = yes])
 AM_CONDITIONAL([PARPORT], [test $build_parport = yes])
 AM_CONDITIONAL([DUMMY], [test $build_dummy = yes])
+AM_CONDITIONAL([DIGILENT_ADAPT2], [test $build_digilent_adapt2 = yes])
 AM_CONDITIONAL([GIVEIO], [test x$parport_use_giveio = xyes])
 AM_CONDITIONAL([EP93XX], [test $build_ep93xx = yes])
 AM_CONDITIONAL([ZY1000], [test $build_zy1000 = yes])

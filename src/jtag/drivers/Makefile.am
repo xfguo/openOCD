@@ -39,6 +39,9 @@ endif
 if DUMMY
 DRIVERFILES += dummy.c
 endif
+if DIGILENT_ADAPT2
+DRIVERFILES += digilent_adapt2.c
+endif
 if FT2232_DRIVER
 DRIVERFILES += ft2232.c
 endif
