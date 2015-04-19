@@ -47,16 +47,20 @@
 HIF hif;
 int bb_execute_queue(void);
 
-/* my private tap controller state, which tracks state for calling code */
-static tap_state_t adapt2_state = TAP_RESET;
+#define BUFFER_SIZE 65536
 
-/* edge detector */
-static int adapt2_clock;
+BYTE * adept_buf;
 
-/* count clocks in any stable state, only stable states */
-static int clock_count;
+static void pre_exit() {
+	if( hif != hifInvalid ) {
 
-static uint32_t adapt2_data;
+		// DJGT API Call: DjtgDisable
+		DjtgDisable(hif);
+
+		// DMGR API Call: DmgrClose
+		DmgrClose(hif);
+	}
+}
 
 static int adapt2_read(void)
 {
@@ -119,24 +123,18 @@ static int adapt2_speed(int speed)
 static int adapt2_init(void)
 {
 	bitbang_interface = &adapt2_bb;
+	
+	adept_buf = malloc(BUFFER_SIZE);
 
 	return ERROR_OK;
-}
-
-void pre_exit() {
-	if( hif != hifInvalid ) {
-
-		// DJGT API Call: DjtgDisable
-		DjtgDisable(hif);
-
-		// DMGR API Call: DmgrClose
-		DmgrClose(hif);
-	}
 }
 
 static int adapt2_quit(void)
 {
 	pre_exit();
+
+	free(adept_buf);
+
 	return ERROR_OK;
 }
 
@@ -176,7 +174,7 @@ COMMAND_HANDLER(adapt2_select_device_cmd)
 	}
 	/* Put JTAG scan chain in SHIFT-DR state. RgbSetup contains TMS/TDI bit-pairs. */
 	// DJTG API Call: DgtgPutTmsTdiBits
-	if(!DjtgPutTmsTdiBits(hif, rgbSetup, NULL, 9, NULL)) {
+	if(!DjtgPutTmsTdiBits(hif, rgbSetup, NULL, 9, fFalse)) {
 		LOG_INFO("DjtgPutTmsTdiBits failed");
 		pre_exit();
 		return ERROR_FAIL;
@@ -186,7 +184,7 @@ COMMAND_HANDLER(adapt2_select_device_cmd)
 	do {
 		
 		// DJTG API Call: DjtgGetTdoBits
-		if(!DjtgGetTdoBits(hif, 0, 0, rgbTdo, 32, NULL)) {
+		if(!DjtgGetTdoBits(hif, 0, 0, rgbTdo, 32, fFalse)) {
 			LOG_ERROR("Error: DjtgGetTdoBits failed");
 			pre_exit();
 			return ERROR_FAIL;
@@ -212,7 +210,7 @@ COMMAND_HANDLER(adapt2_select_device_cmd)
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(adapt2_enmu_cmd)
+COMMAND_HANDLER(adapt2_enum_cmd)
 {
 	DVC		dvc;
 	int		idvc;
@@ -264,7 +262,6 @@ COMMAND_HANDLER(adapt2_enmu_cmd)
 
 		LOG_INFO("  Serial Number:		  %s", szTmp);
 
-		LOG_INFO("");
 	}  // End for
 	
 	/* Clean up and get out */
@@ -275,8 +272,8 @@ COMMAND_HANDLER(adapt2_enmu_cmd)
 }
 const struct command_registration digilent_adapt2_command_handlers[] = {
 	{
-		.name = "adapt2_enmu",
-		.handler = adapt2_enmu_cmd,
+		.name = "adapt2_enum",
+		.handler = adapt2_enum_cmd,
 		.mode = COMMAND_ANY,
 		.help = "prints a warm welcome",
 		.usage = "[name]",
@@ -345,7 +342,6 @@ struct bitbang_interface *bitbang_interface;
  */
 #define CLOCK_IDLE() 0
 
-
 /* The bb driver leaves the TCK 0 when in idle */
 static void bb_end_state(tap_state_t state)
 {
@@ -363,7 +359,12 @@ static void bb_state_move(int skip)
 	uint8_t tms_scan = tap_get_tms_path(tap_get_state(), tap_get_end_state());
 	int tms_count = tap_get_tms_path_len(tap_get_state(), tap_get_end_state());
 
-	DjtgPutTmsBits(hif, 0, &tms_scan, NULL, tms_count, 0);
+	for (i = skip; i < tms_count; i++) {
+		tms = (tms_scan >> i) & 1;
+		bitbang_interface->write(0, tms, 0);
+		bitbang_interface->write(1, tms, 0);
+	}
+	bitbang_interface->write(CLOCK_IDLE(), tms, 0);
 
 	tap_set_state(tap_get_end_state());
 }
@@ -375,12 +376,17 @@ static void bb_state_move(int skip)
 static int bb_execute_tms(struct jtag_command *cmd)
 {
 	unsigned num_bits = cmd->cmd.tms->num_bits;
-	uint8_t *bits = cmd->cmd.tms->bits;
+	const uint8_t *bits = cmd->cmd.tms->bits;
 
 	DEBUG_JTAG_IO("TMS: %d bits", num_bits);
 
-	LOG_INFO("cc: state move");
-	DjtgPutTmsBits(hif, 0, bits, NULL, num_bits, 0);
+	int tms = 0;
+	for (unsigned i = 0; i < num_bits; i++) {
+		tms = ((bits[i/8] >> (i % 8)) & 1);
+		bitbang_interface->write(0, tms, 0);
+		bitbang_interface->write(1, tms, 0);
+	}
+	bitbang_interface->write(CLOCK_IDLE(), tms, 0);
 
 	return ERROR_OK;
 }
@@ -448,8 +454,10 @@ static void bb_stableclocks(int num_cycles)
 	int i;
 
 	/* send num_cycles clocks onto the cable */
-	LOG_INFO("ff: state move");
-	DjtgPutTmsBits(hif, 0, &tms, NULL, num_cycles, 0);
+	for (i = 0; i < num_cycles; i++) {
+		bitbang_interface->write(1, tms, 0);
+		bitbang_interface->write(0, tms, 0);
+	}
 }
 
 static void bb_scan(bool ir_scan, enum scan_type type, uint8_t *buffer, int scan_size)
@@ -468,7 +476,7 @@ static void bb_scan(bool ir_scan, enum scan_type type, uint8_t *buffer, int scan
 		bb_state_move(0);
 		bb_end_state(saved_end_state);
 	}
-	
+
 	for (bit_cnt = 0; bit_cnt < scan_size; bit_cnt++) {
 		int val = 0;
 		int tms = (bit_cnt == scan_size-1) ? 1 : 0;
@@ -530,6 +538,7 @@ int bb_execute_queue(void)
 		bitbang_interface->blink(1);
 
 	while (cmd) {
+		printf(">> CMD = %d\n", cmd->type);
 		switch (cmd->type) {
 			case JTAG_RESET:
 #ifdef _DEBUG_JTAG_IO_
